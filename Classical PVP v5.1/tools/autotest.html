@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>自动测试 — 古典作曲家 大乱斗</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #111; }
+  canvas { display: block; image-rendering: pixelated; width: 960px; height: 540px; }
+</style>
+</head>
+<body>
+<canvas id="screen" width="960" height="540"></canvas>
+<div id="probe" style="position:fixed;left:0;top:0;color:#ffd479;font:12px monospace"></div>
+
+<script>
+  window.__ERRS = [];
+  window.onerror = function (m, s, l, c) { window.__ERRS.push('ERR ' + m + ' @' + (s || '').split('/').pop() + ':' + l + ':' + c); };
+  window.addEventListener('unhandledrejection', function (e) { window.__ERRS.push('REJECT ' + e.reason); });
+
+  // 无头浏览器后台标签页不跑 rAF：屏蔽它，由测试骨架手动步进
+  window.requestAnimationFrame = function (cb) {
+    if (typeof cb === 'function') window.__RAF = cb;
+    return 1;
+  };
+  window.cancelAnimationFrame = function () { };
+</script>
+
+<script src="../js/audio.js"></script>
+<script src="../js/characters.js"></script>
+<script src="../js/sprites.js"></script>
+<script src="../js/effects.js"></script>
+<script src="../js/ai.js"></script>
+<script src="../js/game.js"></script>
+<script src="../js/main.js"></script>
+
+<script>
+  var P = new URLSearchParams(location.search);
+  var probeEl = document.getElementById('probe');
+
+  function probe(extra) {
+    probeEl.textContent = 'probe ' + JSON.stringify({
+      GAME: typeof window.GAME,
+      errs: window.__ERRS.slice(0, 3),
+      extra: extra || null
+    });
+  }
+  probe();
+
+  setTimeout(function () {
+    probe('after-dcl');
+    var G = window.GAME;
+    if (!G) { probe('FATAL no GAME'); return; }
+
+    // 无头环境静音
+    window.Chiptune.init = function () { return null; };
+    window.Chiptune.resume = function () { };
+    window.Chiptune.playTrack = function (t) { return { title: 'MUTE-TRACK-' + t }; };
+    window.Chiptune.sfx = function () { };
+    window.Chiptune.playing = false;
+
+    // 在 latch 之后注入一次性按键（模拟真人按下）
+    var shot = null;
+    var origLatch = G.latch.bind(G);
+    G.latch = function () {
+      origLatch();
+      if (shot) {
+        G.input[shot] = true;
+        G.wasDownPrev[shot] = false;
+        shot = null;
+      } else {
+        G.input.punch = false; G.input.kick = false; G.input.s1 = false;
+        G.input.s2 = false; G.input.ult = false; G.input.start = false;
+        G.input.up = false; G.input.block = false;
+      }
+    };
+
+    var frames = 0;
+    var timeline = [];
+    var lastState = null;
+    var auto = P.get('auto') === '1';
+    var hurt = P.get('hurt') === '1';
+    // 指定我方三人（用于测试羁绊与新机制）
+    var teamParam = (P.get('team') || '').split(',').map(function (v) { return parseInt(v, 10); });
+    var haveTeam = teamParam.length === 3 && teamParam.every(function (v) { return !isNaN(v); });
+    var seq = ['punch', 'kick', 's1', 's2', 'ult', 'punch', 's2', 's1'];
+    var seqPtr = 0;
+    var selectTick = 0;
+    var blockUntil = 0;
+    var hold = {};
+
+    window.__HOLD = function (key, frames) { hold[key] = frames; };
+
+    function bot() {
+      if (!auto) return;
+      if (G.state === 'title') shot = 'start';
+      else if (G.state === 'select') {
+        if (haveTeam) {
+          G.selSlots = teamParam.slice();
+          shot = 'start';
+        } else {
+          var empty = 0;
+          for (var i = 0; i < 3; i++) if (G.selSlots[i] === null) empty++;
+          if (empty > 0) { shot = (selectTick % 2 === 0) ? 'right' : 'punch'; selectTick++; }
+          else shot = 'start';
+        }
+      } else if (G.state === 'vs') { if (frames % 6 === 0) shot = 'start'; }
+      else if (G.state === 'roundover') { if (frames % 5 === 0) shot = 'start'; }
+      else if (G.state === 'result') { if (frames % 9 === 0) shot = 'start'; }
+      else if (G.state === 'fight') {
+        var L = G.left, R = G.right;
+        if (L && R && G.phase === 'play') {
+          if (Math.abs(L.x - R.x) > 86) L.x = R.x - 86;
+          // 周期性按住格挡，测试 75% / 60% 概率规则
+          if (blockUntil > frames) { G.input.block = true; shot = null; return; }
+          G.input.block = false;
+          if (frames % 40 === 0) shot = seq[(seqPtr++) % seq.length];
+          if (frames % 137 === 0) { blockUntil = frames + 46; G.input.block = true; }
+          if (frames % 160 === 0) shot = 'up';
+        }
+      }
+    }
+
+    // 持续按住类按键（例如格挡 S）由外部通过 __HOLD 指定
+    function applyHold() {
+      for (var hk in hold) {
+        if (hold[hk] > 0) { G.input[hk] = true; hold[hk]--; }
+      }
+    }
+
+    // ---- v4.1：统计敌方 AI 的出招构成，用于验证“AI 会挥拳踢腿” ----
+    var aiStat = { punch: 0, kick: 0, skills: [0, 0, 0], basicHits: 0, ultFirstAt: -1 };
+    // ---- v4.2：对局节奏（每回合实际交战帧数 / 总伤害）与玩家大招时机 ----
+    var pace = { rounds: [], playFrames: 0, damage: 0, playerUltFirstAt: -1, playerUltEarly: 0 };
+    (function instrument() {
+      var origBasic = G.startBasic.bind(G);
+      G.startBasic = function (me, kind) {
+        if (me === G.right) { if (kind === 'punch') aiStat.punch++; else aiStat.kick++; }
+        return origBasic(me, kind);
+      };
+      var origSkill = G.useSkill.bind(G);
+      G.useSkill = function (me, foe, slot) {
+        if (me === G.right) {
+          aiStat.skills[slot]++;
+          if (slot === 2 && aiStat.ultFirstAt < 0) aiStat.ultFirstAt = G.playT || 0;
+        }
+        if (me === G.left && slot === 2) {
+          var pt = G.playT || 0;
+          if (pace.playerUltFirstAt < 0) pace.playerUltFirstAt = pt;
+          if (pt < 360) pace.playerUltEarly++;   // 开局 6 秒冷却失效时会被记到这里
+        }
+        return origSkill(me, foe, slot);
+      };
+      var origHit = G.hitTarget.bind(G);
+      G.hitTarget = function (a, v, hit, st) {
+        if (a === G.right && v === G.left && hit && hit.basic) aiStat.basicHits++;
+        var before = v ? v.hp : 0;
+        var r = origHit(a, v, hit, st);
+        if (v && v.hp < before) pace.damage += before - v.hp;
+        return r;
+      };
+    })();
+    window.__AI = function () { return aiStat; };
+    window.__PACE = function () { return pace; };
+
+    var lastPhase2 = null;
+    window.__STEP = function (n) {
+      for (var i = 0; i < n; i++) {
+        frames++;
+        if (G.state !== lastState) { timeline.push(G.state + '@' + frames); lastState = G.state; }
+        applyHold();
+        bot();
+        G.update();
+        G.draw();
+        // v4.2：记录每回合实际交战帧数（用于评估节奏快慢）
+        if (G.phase === 'play') pace.playFrames++;
+        if (lastPhase2 === 'play' && G.phase !== 'play') { pace.rounds.push(pace.playFrames); pace.playFrames = 0; }
+        lastPhase2 = G.phase;
+        if (hurt && G.state === 'fight' && G.phase === 'play' && G.left && frames % 90 === 0) {
+          G.left.hp -= 16;
+        }
+      }
+      return window.__INFO();
+    };
+
+    // 只推进逻辑不渲染，用于快速跑到某个游戏状态
+    window.__STEPFAST = function (n) {
+      for (var i = 0; i < n; i++) {
+        frames++;
+        if (G.state !== lastState) { timeline.push(G.state + '@' + frames); lastState = G.state; }
+        applyHold();
+        bot();
+        G.update();
+      }
+      return window.__INFO();
+    };
+
+    window.__INFO = function () {
+      var L = G.left, R = G.right;
+      var o = {
+        frames: frames, state: G.state, phase: G.phase || null, round: G.roundNo,
+        timeline: timeline.join('>'), errs: window.__ERRS.slice(0, 3),
+        slots: G.selSlots, stopped: false,
+        proj: G.projectiles.length, fx: G.fx.list.length,
+        fields: G.fields.length, echoes: G.echoes.length
+      };
+      if (L && R) {
+        o.left = { n: L.c.en, hp: Math.round(L.hp), max: L.maxHp, st: L.state, cd: L.cd.map(function (v) { return Math.round(v / 60); }) };
+        o.right = { n: R.c.en, hp: Math.round(R.hp), max: R.maxHp, st: R.state, cd: R.cd.map(function (v) { return Math.round(v / 60); }) };
+        o.active = {
+          blocking: L.blocking, guardHit: L.guardHit, invuln: L.invuln,
+          bondEra: L.bondEra, bondRegion: L.bondRegion, bondSystem: L.bondSystem,
+          bondTimer: Math.ceil(L.bondTimer / 60), bondShield: L.bondShield,
+          dmgMul: +L.damageMul().toFixed(3)
+        };
+        o.aiBond = { era: R.bondEra, region: R.bondRegion, system: R.bondSystem };
+      }
+      o.playerBonds = G.playerBonds ? {
+        era: G.playerBonds.era && (G.playerBonds.era.tag + 'x' + G.playerBonds.era.count),
+        region: G.playerBonds.region && (G.playerBonds.region.tag + 'x' + G.playerBonds.region.count),
+        system: G.playerBonds.system && (G.playerBonds.system.tag + 'x' + G.playerBonds.system.count)
+      } : null;
+      o.enemyBonds = G.enemyBonds ? {
+        era: G.enemyBonds.era && (G.enemyBonds.era.tag + 'x' + G.enemyBonds.era.count),
+        region: G.enemyBonds.region && (G.enemyBonds.region.tag + 'x' + G.enemyBonds.region.count),
+        system: G.enemyBonds.system && (G.enemyBonds.system.tag + 'x' + G.enemyBonds.system.count)
+      } : null;
+      o.playerTeam = G.playerTeam.map(function (f) { return f.c.name + ':' + Math.round(f.hp); });
+      o.enemyTeam = G.enemyTeam.map(function (f) { return f.c.name + ':' + Math.round(f.hp); });
+      o.ai = {
+        punch: aiStat.punch, kick: aiStat.kick,
+        basic: aiStat.punch + aiStat.kick,
+        basicHits: aiStat.basicHits,
+        skills: aiStat.skills,
+        ultFirstAt: aiStat.ultFirstAt
+      };
+      o.pace = {
+        rounds: pace.rounds.slice(),
+        curPlayFrames: pace.playFrames,
+        damage: pace.damage,
+        playerUltFirstAt: pace.playerUltFirstAt,
+        playerUltEarly: pace.playerUltEarly
+      };
+      return o;
+    };
+
+    probe('ready');
+  }, 200);
+</script>
+</body>
+</html>
