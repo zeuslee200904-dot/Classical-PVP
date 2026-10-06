@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>v6.0 造型对照表</title>
+<style>
+  * { margin: 0; padding: 0; }
+  body { background: #6e7480; }
+  canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="screen" width="1620" height="2420"></canvas>
+<script src="../js/audio.js"></script>
+<script src="../js/characters.js"></script>
+<script src="../js/sprites.js"></script>
+<script src="../js/effects.js"></script>
+<script>
+(function () {
+  var ctx = document.getElementById('screen').getContext('2d');
+  var W = 1620;
+  var N = window.COMPOSERS.length;
+  var INK = '#1a1e26';
+
+  // ---------- 先行布局：所有 Y 偏移都先算出来，画布高度才不会写死 ----------
+  // v5.1 的老版本把每种词表的格子排成一行，v6.0 加词之后一行放不下（13 款袍服 × 156 = 2028 > 1620），
+  // 所以这里统一改成"按列数换行 + 行高自适应"。
+  var COLS = 10, CW = 156, CH = 176, X0 = 24, Y0 = 62;
+  var gridRows = Math.ceil(N / COLS);
+  var yA = Y0 + gridRows * CH + 34;
+
+  var STYLES = ['frock', 'tailed', 'habit', 'gown', 'military', 'doublet', 'jacket', 'sweater',
+    'kimono', 'tunic', 'justaucorps', 'waistcoat', 'academic'];
+  var ITEMS = ['baton', 'violin', 'flute', 'trumpet', 'lute', 'lyre', 'quill', 'scroll',
+    'fan', 'watch', 'book', 'wineglass', 'metronome', 'cane', 'organ',
+    'notebook', 'cigar', 'cello', 'harp', 'horn', 'snuffbox'];
+  var HATS = ['tricorne', 'bicorne', 'tophat', 'flatcap', 'mortarboard', 'beret', 'hood',
+    'wreath', 'straw', 'nightcap', 'bowler', 'widebrim'];
+  var HAIRS = Object.keys(window.Sprites.HAIR_STYLES || {});
+
+  var SW = 156, SH = 190, STYLE_PER_ROW = 10;
+  var IW = 106, IH = 172, ITEM_PER_ROW = 14;
+  var HW = 156, HH = 172, HAT_PER_ROW = 10;
+  var VW = 156, VH = 178, HAIR_PER_ROW = 12;
+
+  function rowsOf(n, per) { return Math.ceil(n / per); }
+  function blockH(rows, cellH) { return rows * cellH; }
+
+  var yB = yA + 18;
+  var yC = yB + blockH(rowsOf(STYLES.length, STYLE_PER_ROW), SH) + 34;
+  var yD = yC + 18;
+  var yE = yD + blockH(rowsOf(ITEMS.length, ITEM_PER_ROW), IH) + 34;
+  var yF = yE + 18;
+  var yG = yF + blockH(rowsOf(HATS.length, HAT_PER_ROW), HH) + 32;
+  var yH = yG + 18;
+  var yI = yH + blockH(rowsOf(HAIRS.length, HAIR_PER_ROW), VH) + 32;
+
+  var VARIANTS = [
+    ['无挂件', {}, 0],
+    ['披风 cape', { cape: true }, 0],
+    ['围巾 scarf', { scarf: true }, 0],
+    ['绶带 sash', { sash: true }, 0],
+    ['拉夫领 ruff', { ruff: true }, 0],
+    ['驼背 stoop 0', {}, 0],
+    ['驼背 stoop 1', {}, 1],
+    ['驼背 stoop 2', {}, 2],
+    ['单片眼镜 monocle', { monocle: true }, 0],
+    ['烟斗 pipe', { pipe: true }, 0],
+    ['耳环 earring', { earring: true }, 0],
+    ['眼镜 glasses', { glasses: true }, 0]
+  ];
+  var VAR_PER_ROW = 12;
+  // 注意：这里必须以 yI（发型段的起点）为基准，不能再用 yH ——
+  // 写成 yH 会让「挂件/驼背/面部配件」整段上移一个发型块的高度，正好压在发型格子上。
+  var yJ = yI + blockH(rowsOf(VARIANTS.length, VAR_PER_ROW), VH) + 40;
+
+  var H = yJ;
+  var cv = document.getElementById('screen');
+  cv.width = W; cv.height = H;
+
+  // 用中间调底色：本项目里最深的袍色明度只有 ~18%，画在深底上会看不见剪影
+  ctx.fillStyle = '#6e7480';
+  ctx.fillRect(0, 0, W, H);
+
+  function label(text, x, y, size, color, align) {
+    ctx.font = (size || 12) + 'px "Microsoft YaHei", Consolas, monospace';
+    ctx.fillStyle = color || INK;
+    ctx.textAlign = align || 'left';
+    ctx.fillText(text, x, y);
+  }
+  function section(title, sub, y) {
+    ctx.fillStyle = INK;
+    ctx.fillRect(24, y - 22, 5, 26);
+    label(title, 40, y, 20, '#12161c');
+    label(sub, 40 + ctx.measureText(title).width + 240, y, 12, '#3a424e');
+  }
+  function cellBg(x, y, w, h, alt) {
+    ctx.fillStyle = alt ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.10)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(30,34,42,0.35)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  }
+  function ground(x1, x2, y) {
+    ctx.strokeStyle = 'rgba(30,34,42,0.40)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y); ctx.stroke();
+  }
+  function copySprite(src) {
+    var o = {};
+    for (var k in src) o[k] = src[k];
+    return o;
+  }
+  function pick(pred) {
+    for (var k = 0; k < window.COMPOSERS.length; k++) if (pred(window.COMPOSERS[k])) return window.COMPOSERS[k];
+    return window.COMPOSERS[0];
+  }
+  function countBy(pred) {
+    var n = 0;
+    for (var q = 0; q < window.COMPOSERS.length; q++) if (pred(window.COMPOSERS[q])) n++;
+    return n;
+  }
+
+  // =========================================================
+  //  A. 全体总览
+  // =========================================================
+  section(N + ' 位作曲家 · 造型总览', '每格：序号 / 姓名 / 袍服款式 / 手持物 / 帽子 / 发型', 44);
+  for (var i = 0; i < window.COMPOSERS.length; i++) {
+    var c = window.COMPOSERS[i];
+    var cx = X0 + (i % COLS) * CW, cy = Y0 + Math.floor(i / COLS) * CH;
+    cellBg(cx + 3, cy + 3, CW - 6, CH - 6, i % 2 === 0);
+    ground(cx + 12, cx + CW - 12, cy + 118);
+    window.Sprites.draw(ctx, {
+      composer: c, state: 'idle', tick: (i % 3) * 7, facing: 'right', scale: 0.9
+    }, cx + CW / 2, cy + 118);
+    label((i + 1) + '. ' + c.name, cx + CW / 2, cy + 136, 13, '#12161c', 'center');
+    label(c.sprite.coatStyle + ' · ' + c.sprite.item, cx + CW / 2, cy + 151, 10.5, '#153a56', 'center');
+    label((c.sprite.hat || '无帽') + ' · ' + c.sprite.hair, cx + CW / 2, cy + 164, 10.5, '#4a1f4a', 'center');
+  }
+
+  var base = window.COMPOSER_BY_ID['beethoven'];
+  function strip(sp) {
+    sp.hat = null; sp.item = null; sp.cape = false; sp.scarf = false; sp.sash = false; sp.ruff = false;
+    sp.beard = false; sp.mustache = false; sp.glasses = false; sp.monocle = false; sp.pipe = false;
+    sp.earring = false; sp.stoop = 0; sp.height = 1; sp.bulk = 1;
+    return sp;
+  }
+
+  // =========================================================
+  //  B. 袍服款式
+  // =========================================================
+  section(STYLES.length + ' 种袍服剪影', '统一剥掉帽子 / 手持物 / 挂件，只比较衣服本身的轮廓', yA);
+  for (var s = 0; s < STYLES.length; s++) {
+    var st = STYLES[s];
+    var who = pick(function (c) { return c.sprite.coatStyle === st; });
+    var sx = X0 + (s % STYLE_PER_ROW) * SW, sy = yB + Math.floor(s / STYLE_PER_ROW) * SH;
+    cellBg(sx + 3, sy, SW - 6, SH - 6, s % 2 === 0);
+    ground(sx + 12, sx + SW - 12, sy + 126);
+    // 用"贝多芬的体型 + 该款式的代表配色"，避免体型差异干扰轮廓比较
+    var sp = strip(copySprite(base.sprite));
+    sp.coatStyle = st;
+    sp.coat = who.sprite.coat.slice();
+    window.Sprites.draw(ctx, {
+      composer: { sprite: sp }, state: 'idle', tick: 0, facing: 'right', scale: 1.0
+    }, sx + SW / 2, sy + 126);
+    label(st, sx + SW / 2, sy + 148, 13, '#12161c', 'center');
+    label('例：' + who.name, sx + SW / 2, sy + 164, 10.5, '#333a46', 'center');
+    label(countBy(function (c) { return c.sprite.coatStyle === st; }) + ' 人', sx + SW / 2, sy + 178, 10.5, '#0f4438', 'center');
+  }
+
+  // =========================================================
+  //  C. 手持物
+  // =========================================================
+  section(ITEMS.length + ' 种手持物', '统一用贝多芬的体型与配色，只换 item 字段；用 cast 姿势让手臂抬起', yC);
+  for (var it = 0; it < ITEMS.length; it++) {
+    var ix = X0 + (it % ITEM_PER_ROW) * IW, iy = yD + Math.floor(it / ITEM_PER_ROW) * IH;
+    cellBg(ix + 3, iy, IW - 6, IH - 6, it % 2 === 0);
+    ground(ix + 8, ix + IW - 8, iy + 120);
+    var sp2 = strip(copySprite(base.sprite));
+    sp2.item = ITEMS[it];
+    window.Sprites.draw(ctx, {
+      composer: { sprite: sp2 }, state: 'cast', tick: 0, facing: 'right', scale: 0.86
+    }, ix + IW / 2, iy + 120);
+    label(ITEMS[it], ix + IW / 2, iy + 140, 11.5, '#153a56', 'center');
+    label(countBy(function (c) { return c.sprite.item === ITEMS[it]; }) + ' 人', ix + IW / 2, iy + 156, 10.5, '#0f4438', 'center');
+  }
+
+  // =========================================================
+  //  D. 帽子
+  // =========================================================
+  section(HATS.length + ' 种帽子', '统一用贝多芬的体型与短发，只换 hat 字段', yE);
+  for (var h = 0; h < HATS.length; h++) {
+    var hx = X0 + (h % HAT_PER_ROW) * HW, hy = yF + Math.floor(h / HAT_PER_ROW) * HH;
+    cellBg(hx + 3, hy, HW - 6, HH - 6, h % 2 === 0);
+    ground(hx + 12, hx + HW - 12, hy + 120);
+    var sp3 = strip(copySprite(base.sprite));
+    sp3.hat = HATS[h];
+    sp3.hair = 'short'; sp3.hairColor = '#6a5a48'; sp3.hairDark = '#3a2f22';
+    window.Sprites.draw(ctx, {
+      composer: { sprite: sp3 }, state: 'idle', tick: 0, facing: 'right', scale: 1.0
+    }, hx + HW / 2, hy + 120);
+    label(HATS[h], hx + HW / 2, hy + 140, 12, '#4a1f4a', 'center');
+    label(countBy(function (c) { return c.sprite.hat === HATS[h]; }) + ' 人', hx + HW / 2, hy + 156, 10.5, '#0f4438', 'center');
+  }
+
+  // =========================================================
+  //  E. 发型
+  // =========================================================
+  section(HAIRS.length + ' 种发型', '统一用贝多芬的体型与配色，只换 hair 字段（含 v6.0 新增的 5 种）', yG);
+  for (var hr = 0; hr < HAIRS.length; hr++) {
+    var rx = X0 + (hr % HAIR_PER_ROW) * VW, ry = yH + Math.floor(hr / HAIR_PER_ROW) * VH;
+    cellBg(rx + 3, ry, VW - 6, VH - 6, hr % 2 === 0);
+    ground(rx + 12, rx + VW - 12, ry + 124);
+    var sp5 = strip(copySprite(base.sprite));
+    sp5.hair = HAIRS[hr];
+    window.Sprites.draw(ctx, {
+      composer: { sprite: sp5 }, state: 'idle', tick: 0, facing: 'right', scale: 1.0
+    }, rx + VW / 2, ry + 124);
+    label(HAIRS[hr], rx + VW / 2, ry + 146, 12, '#12161c', 'center');
+    label(countBy(function (c) { return c.sprite.hair === HAIRS[hr]; }) + ' 人', rx + VW / 2, ry + 162, 10.5, '#0f4438', 'center');
+  }
+
+  // =========================================================
+  //  F. 躯干挂件 / 驼背 / 面部小配件
+  // =========================================================
+  section('躯干挂件 · 驼背程度 · 面部配件',
+    'cape / scarf / sash / ruff / stoop 0-1-2 / monocle · pipe · earring · glasses', yI);
+  for (var v = 0; v < VARIANTS.length; v++) {
+    var vx = X0 + (v % VAR_PER_ROW) * VW, vy = yJ - 18 - blockH(rowsOf(VARIANTS.length, VAR_PER_ROW), VH) + Math.floor(v / VAR_PER_ROW) * VH;
+    cellBg(vx + 3, vy, VW - 6, VH - 6, v % 2 === 0);
+    ground(vx + 12, vx + VW - 12, vy + 124);
+    var sp4 = strip(copySprite(base.sprite));
+    sp4.hair = 'short'; sp4.hairColor = '#6a5a48'; sp4.hairDark = '#3a2f22';
+    for (var k6 in VARIANTS[v][1]) sp4[k6] = VARIANTS[v][1][k6];
+    sp4.stoop = VARIANTS[v][2];
+    window.Sprites.draw(ctx, {
+      composer: { sprite: sp4 }, state: 'idle', tick: 0, facing: 'right', scale: 1.0
+    }, vx + VW / 2, vy + 124);
+    label(VARIANTS[v][0], vx + VW / 2, vy + 146, 12, '#12161c', 'center');
+  }
+
+  label('古典作曲家 大乱斗 · Version 6.0 造型对照表', 24, H - 16, 14, '#20242c');
+  label('共 ' + N + ' 位 · ' + STYLES.length + ' 种袍服 · ' + ITEMS.length + ' 种手持物 · ' +
+    HATS.length + ' 种帽子 · ' + HAIRS.length + ' 种发型 · 一人一色',
+    W - 24, H - 16, 14, '#20242c', 'right');
+  window.__LOOKSHEET_DONE = true;
+})();
+</script>
+</body>
+</html>
